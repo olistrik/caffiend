@@ -1,0 +1,19 @@
+[
+  {"id":8881,"name":"Lady in Red","permalink":"https://www.dakcoffeeroasters.com/product/lady-in-red/","is_in_stock":false,
+   "categories":[{"id":43,"name":"Filter","slug":"filter"}],
+   "prices":{"price":"4490","currency_code":"EUR","currency_minor_unit":2},
+   "attributes":[
+     {"name":"Flavor Profile","terms":[{"name":"Funky"},{"name":"Unusual"}]},
+     {"name":"Origin","terms":[{"name":"Colombia"}]},
+     {"name":"Region","terms":[{"name":"Bruselas"}]},
+     {"name":"Varietal","terms":[{"name":"Pacamara"}]},
+     {"name":"Process","terms":[{"name":"Advanced Anaerobic Natural"}]},
+     {"name":"Tasting notes","terms":[{"name":"Black Cherry"},{"name":"Citrus"},{"name":"Strawberry Candy"}]},
+     {"name":"Weight","terms":[{"name":"125g"}]}]},
+  {"id":8800,"name":"Peachy Daze","permalink":"https://www.dakcoffeeroasters.com/product/peachy-daze/","is_in_stock":true,
+   "categories":[{"id":43,"name":"Filter","slug":"filter"}],
+   "prices":{"price":"2100","currency_code":"EUR","currency_minor_unit":2}},
+  {"id":7000,"name":"Dak Tee","permalink":"https://www.dakcoffeeroasters.com/product/dak-tee/","is_in_stock":true,
+   "categories":[{"id":50,"name":"Wear","slug":"wear"}],
+   "prices":{"price":"3000","currency_code":"EUR","currency_minor_unit":2}}
+]
