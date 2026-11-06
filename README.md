@@ -1,4 +1,8 @@
-# caffiend
+<p align="center">
+  <img src="assets/logo.svg" alt="caffiend" width="160">
+</p>
+
+<h1 align="center">caffiend</h1>
 
 Watches WooCommerce webshops (built for coffee roasters) and sends a message when a product is new,
 and optionally when a sold-out one is back in stock. It reads each shop's public WooCommerce Store
