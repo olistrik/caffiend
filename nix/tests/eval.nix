@@ -14,6 +14,15 @@ let
       system.stateVersion = "25.11";
       services.caffiend = {
         enable = true;
+        shops = {
+          dak = {
+            url = "https://www.dakcoffeeroasters.com";
+            name = "DAK";
+            categories = [ "filter" "espresso" ];
+            attributes = [ "Origin" "Tasting notes" ];
+          };
+          other.url = "https://shop.example.com";
+        };
         ntfy = {
           enable = true;
           topicFile = "/run/secrets/caffiend-ntfy-topic";

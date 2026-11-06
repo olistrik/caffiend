@@ -47,7 +47,7 @@ mod tests {
             in_stock,
             price: None,
             categories: vec!["filter".into()],
-            details: Default::default(),
+            attributes: vec![],
         }
     }
 

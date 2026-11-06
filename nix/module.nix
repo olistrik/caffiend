@@ -1,20 +1,99 @@
-# The caffiend NixOS module: a service that polls the shop and sends messages about new and
-# restocked coffees. Secrets are file paths (strings), so they never enter the Nix store, for
-# example `config.age.secrets.x.path`.
+# The caffiend NixOS module: one service that polls WooCommerce shops and sends messages about
+# new (and, opt-in, restocked) products. Secrets are file paths (strings), so they never enter the
+# Nix store, for example `config.age.secrets.x.path`.
 { packages }:
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 
 let
   cfg = config.services.caffiend;
-  inherit (lib) mkEnableOption mkIf mkOption types;
+  inherit (lib)
+    mkEnableOption
+    mkIf
+    mkOption
+    types
+    ;
+  json = pkgs.formats.json { };
+
+  shopOptions = {
+    options = {
+      url = mkOption {
+        type = types.str;
+        example = "https://www.example-roaster.com";
+        description = "The shop's address. Its WooCommerce Store API is read from there.";
+      };
+      name = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "What messages call the shop. Defaults to its hostname.";
+      };
+      categories = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [
+          "filter"
+          "espresso"
+        ];
+        description = "Only products in these category slugs are announced. Empty means all of them.";
+      };
+      attributes = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [
+          "Origin"
+          "Process"
+          "Tasting notes"
+        ];
+        description = ''
+          Which product attributes messages show, in this order. Empty means every attribute the
+          shop provides. Names are the shop's own and match regardless of case.
+        '';
+      };
+      restocks = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Also message when a sold-out product is back in stock. Off by default: new products are
+          what matter, and stock flips often.
+        '';
+      };
+    };
+  };
+
+  withoutNulls = lib.filterAttrs (_: v: v != null);
+  configFile = json.generate "caffiend.json" (withoutNulls {
+    interval_secs = cfg.interval;
+    state_dir = cfg.dataDir;
+    ntfy = mkIf' cfg.ntfy.enable {
+      inherit (cfg.ntfy) server;
+      topic_file = cfg.ntfy.topicFile;
+    };
+    telegram = mkIf' cfg.telegram.enable {
+      token_file = cfg.telegram.tokenFile;
+      chat_id = cfg.telegram.chatId;
+    };
+    shops = lib.mapAttrs (
+      _: shop:
+      withoutNulls {
+        inherit (shop)
+          url
+          name
+          categories
+          attributes
+          restocks
+          ;
+      }
+    ) cfg.shops;
+  });
+  mkIf' = condition: value: if condition then value else null;
 in
 {
   options.services.caffiend = {
-    enable = mkEnableOption "caffiend, the coffee shop watcher";
+    enable = mkEnableOption "caffiend, the webshop watcher";
 
     package = mkOption {
       type = types.package;
@@ -23,34 +102,29 @@ in
       description = "The package providing `caffiend`.";
     };
 
-    shopUrl = mkOption {
-      type = types.str;
-      default = "https://www.dakcoffeeroasters.com";
-      description = "The WooCommerce shop to watch.";
-    };
-
-    categories = mkOption {
-      type = types.listOf types.str;
-      default = [
-        "filter"
-        "espresso"
-      ];
-      description = "Only products in these category slugs are announced. Empty means all of them.";
-    };
-
-    restocks = mkOption {
-      type = types.bool;
-      default = false;
+    shops = mkOption {
+      type = types.attrsOf (types.submodule shopOptions);
+      default = { };
+      example = lib.literalExpression ''
+        {
+          dak = {
+            url = "https://www.dakcoffeeroasters.com";
+            name = "DAK";
+            categories = [ "filter" "espresso" ];
+            attributes = [ "Origin" "Process" "Tasting notes" ];
+          };
+        }
+      '';
       description = ''
-        Also message when a coffee that was sold out is back in stock. Off by default: new coffees
-        are what matter, and stock flips often.
+        The shops to watch, by a short key (lowercase letters, digits, `-` and `_`) that names the
+        shop's state file and appears in logs.
       '';
     };
 
     interval = mkOption {
       type = types.ints.positive;
       default = 600;
-      description = "Seconds between polls. Be kind to the shop.";
+      description = "Seconds between polls of the shops. Be kind to them.";
     };
 
     user = mkOption {
@@ -104,6 +178,17 @@ in
   };
 
   config = mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.shops != { };
+        message = "services.caffiend: add at least one shop to `shops`.";
+      }
+      {
+        assertion = lib.all (key: builtins.match "[a-z0-9_-]+" key != null) (lib.attrNames cfg.shops);
+        message = "services.caffiend: shop keys may only hold a-z, 0-9, - and _.";
+      }
+    ];
+
     users.users = lib.mkIf (cfg.user == "caffiend") {
       caffiend = {
         isSystemUser = true;
@@ -115,30 +200,14 @@ in
     systemd.tmpfiles.rules = [ "d ${cfg.dataDir} 0750 ${cfg.user} ${cfg.group} -" ];
 
     systemd.services.caffiend = {
-      description = "Coffee shop watcher";
+      description = "Webshop watcher";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
+      restartTriggers = [ configFile ];
       environment.RUST_LOG = "info";
       serviceConfig = {
-        ExecStart = lib.concatStringsSep " " (
-          [
-            "${lib.getExe cfg.package}"
-            "--shop-url ${lib.escapeShellArg cfg.shopUrl}"
-            "--interval-secs ${toString cfg.interval}"
-            "--state-dir ${cfg.dataDir}"
-          ]
-          ++ lib.optional cfg.restocks "--restocks"
-          ++ map (c: "--category ${lib.escapeShellArg c}") cfg.categories
-          ++ lib.optionals cfg.ntfy.enable [
-            "--ntfy-server ${lib.escapeShellArg cfg.ntfy.server}"
-            "--ntfy-topic-file ${lib.escapeShellArg cfg.ntfy.topicFile}"
-          ]
-          ++ lib.optionals cfg.telegram.enable [
-            "--telegram-token-file ${lib.escapeShellArg cfg.telegram.tokenFile}"
-            "--telegram-chat-id ${lib.escapeShellArg cfg.telegram.chatId}"
-          ]
-        );
+        ExecStart = "${lib.getExe cfg.package} --config ${configFile}";
         User = cfg.user;
         Group = cfg.group;
         Restart = "on-failure";

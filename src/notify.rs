@@ -5,73 +5,54 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 
-use crate::{diff::Event, product::Product};
+use crate::{config::Config, diff::Event, product::Product};
 
 pub struct Message {
     pub title: String,
     pub body: String,
+    /// Where tapping the message goes. Empty for none.
     pub url: String,
 }
 
-impl From<&Event> for Message {
-    fn from(event: &Event) -> Self {
+impl Message {
+    /// `shop` is what the shop is called; `shown` names the attributes to include (all when empty).
+    pub fn new(event: &Event, shop: &str, shown: &[String]) -> Self {
         let (verb, product) = match event {
-            Event::New(p) => ("New coffee", p),
+            Event::New(p) => ("New", p),
             Event::Restocked(p) => ("Back in stock", p),
         };
         Message {
-            title: format!("{verb}: {}", product.name),
-            body: body(product),
+            title: format!("{verb} at {shop}: {}", product.name),
+            body: body(product, shown),
             url: product.url.clone(),
+        }
+    }
+
+    pub fn test() -> Self {
+        Message {
+            title: "caffiend test".to_owned(),
+            body: "If you can read this, notifications work.".to_owned(),
+            url: String::new(),
         }
     }
 }
 
-/// One line per fact, left out when the shop does not say: where it is from and how it was
-/// processed, what it tastes like, its flavour tags, then price and sizes, then the link.
-fn body(product: &Product) -> String {
-    let d = &product.details;
-    let text = |o: &Option<String>| o.clone().unwrap_or_default();
-    let origin = joined(
-        " | ",
-        &[
-            joined(", ", &[text(&d.origin), text(&d.region)]),
-            joined(" ", &[text(&d.varietal), text(&d.process)]),
-        ],
-    );
-    let sold_out = if product.in_stock {
-        ""
-    } else {
-        "sold out already"
-    };
-    let price = joined(
-        " | ",
-        &[
-            text(&product.price),
-            d.sizes.join(" / "),
-            sold_out.to_owned(),
-        ],
-    );
-    joined(
-        "\n",
-        &[
-            origin,
-            d.tasting_notes.join(", "),
-            d.flavours.join(", "),
-            price,
-            product.url.clone(),
-        ],
-    )
-}
-
-/// Joins the parts that are not empty.
-fn joined(separator: &str, parts: &[String]) -> String {
-    let present: Vec<&str> = parts
-        .iter()
-        .map(String::as_str)
-        .filter(|p| !p.is_empty())
+/// One line per attribute (`Origin: Colombia`), then price, then the link.
+fn body(product: &Product, shown: &[String]) -> String {
+    let mut lines: Vec<String> = product
+        .shown_attributes(shown)
+        .into_iter()
+        .map(|a| format!("{}: {}", a.name, a.terms.join(", ")))
         .collect();
-    present.join(separator)
+    let mut price: Vec<&str> = product.price.as_deref().into_iter().collect();
+    if !product.in_stock {
+        price.push("sold out already");
+    }
+    if !price.is_empty() {
+        lines.push(price.join(" | "));
+    }
+    lines.push(product.url.clone());
+    lines.join("\n")
 }
 
 pub enum Notifier {
@@ -92,7 +73,7 @@ pub enum Notifier {
 }
 
 /// A secret kept in a file, so it never lands on a command line or in the Nix store.
-pub fn read_secret(path: &Path) -> Result<String> {
+fn read_secret(path: &Path) -> Result<String> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let secret = text.trim().to_owned();
     if secret.is_empty() {
@@ -102,6 +83,29 @@ pub fn read_secret(path: &Path) -> Result<String> {
 }
 
 impl Notifier {
+    pub fn from_config(config: &Config) -> Result<Self> {
+        let mut all = Vec::new();
+        if let Some(ntfy) = &config.ntfy {
+            all.push(Notifier::Ntfy {
+                client: reqwest::Client::new(),
+                server: ntfy.server.clone(),
+                topic: read_secret(&ntfy.topic_file)?,
+            });
+        }
+        if let Some(telegram) = &config.telegram {
+            all.push(Notifier::Telegram {
+                client: reqwest::Client::new(),
+                token: read_secret(&telegram.token_file)?,
+                chat_id: telegram.chat_id.clone(),
+            });
+        }
+        if all.is_empty() {
+            tracing::warn!("no notifier configured: messages are only logged");
+            all.push(Notifier::Log);
+        }
+        Ok(Notifier::Many(all))
+    }
+
     pub async fn send(&self, message: &Message) -> Result<()> {
         Box::pin(self.send_inner(message)).await
     }
@@ -127,13 +131,15 @@ impl Notifier {
                 server,
                 topic,
             } => {
-                let payload = json!({
+                let mut payload = json!({
                     "topic": topic,
                     "title": message.title,
                     "message": message.body,
-                    "click": message.url,
                     "tags": ["coffee"],
                 });
+                if !message.url.is_empty() {
+                    payload["click"] = json!(message.url);
+                }
                 post(client, server, &payload).await
             }
             Notifier::Telegram {
@@ -145,12 +151,8 @@ impl Notifier {
                     "chat_id": chat_id,
                     "text": format!("{}\n{}", message.title, message.body),
                 });
-                post(
-                    client,
-                    &format!("https://api.telegram.org/bot{token}/sendMessage"),
-                    &payload,
-                )
-                .await
+                let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+                post(client, &url, &payload).await
             }
         }
     }
@@ -171,7 +173,14 @@ async fn post(client: &reqwest::Client, url: &str, payload: &serde_json::Value) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::product::Details;
+    use crate::product::Attribute;
+
+    fn attribute(name: &str, terms: &[&str]) -> Attribute {
+        Attribute {
+            name: name.to_owned(),
+            terms: terms.iter().map(|t| (*t).to_owned()).collect(),
+        }
+    }
 
     fn lady_in_red(in_stock: bool) -> Product {
         Product {
@@ -181,38 +190,52 @@ mod tests {
             in_stock,
             price: Some("44.90 EUR".into()),
             categories: vec!["filter".into()],
-            details: Details {
-                origin: Some("Colombia".into()),
-                region: Some("Bruselas".into()),
-                varietal: Some("Pacamara".into()),
-                process: Some("Advanced Anaerobic Natural".into()),
-                tasting_notes: vec!["Black Cherry".into(), "Citrus".into()],
-                flavours: vec!["Funky".into(), "Unusual".into()],
-                sizes: vec!["125g".into()],
-            },
+            attributes: vec![
+                attribute("Origin", &["Colombia"]),
+                attribute("Altitude", &["1800masl"]),
+                attribute("Tasting notes", &["Black Cherry", "Citrus"]),
+                attribute("Empty", &[]),
+            ],
         }
     }
 
     #[test]
-    fn a_new_coffee_message_has_the_details() {
-        let message = Message::from(&Event::New(lady_in_red(false)));
-        assert_eq!(message.title, "New coffee: Lady in Red");
+    fn a_message_shows_the_chosen_attributes_in_order() {
+        let shown = [
+            "tasting notes".to_owned(),
+            "Origin".to_owned(),
+            "Missing".to_owned(),
+        ];
+        let message = Message::new(&Event::New(lady_in_red(false)), "DAK", &shown);
+        assert_eq!(message.title, "New at DAK: Lady in Red");
         assert_eq!(
             message.body,
-            "Colombia, Bruselas | Pacamara Advanced Anaerobic Natural\n\
-             Black Cherry, Citrus\n\
-             Funky, Unusual\n\
-             44.90 EUR | 125g | sold out already\n\
+            "Tasting notes: Black Cherry, Citrus\n\
+             Origin: Colombia\n\
+             44.90 EUR | sold out already\n\
              https://example.com/lady"
         );
     }
 
     #[test]
-    fn a_product_without_details_still_has_price_and_link() {
+    fn with_none_chosen_every_attribute_with_terms_is_shown() {
+        let message = Message::new(&Event::Restocked(lady_in_red(true)), "DAK", &[]);
+        assert_eq!(message.title, "Back in stock at DAK: Lady in Red");
+        assert_eq!(
+            message.body,
+            "Origin: Colombia\n\
+             Altitude: 1800masl\n\
+             Tasting notes: Black Cherry, Citrus\n\
+             44.90 EUR\n\
+             https://example.com/lady"
+        );
+    }
+
+    #[test]
+    fn a_product_without_attributes_still_has_price_and_link() {
         let mut product = lady_in_red(true);
-        product.details = Details::default();
-        let message = Message::from(&Event::Restocked(product));
-        assert_eq!(message.title, "Back in stock: Lady in Red");
+        product.attributes.clear();
+        let message = Message::new(&Event::New(product), "DAK", &[]);
         assert_eq!(message.body, "44.90 EUR\nhttps://example.com/lady");
     }
 }

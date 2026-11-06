@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::{
     entities::decode,
-    product::{Details, Product},
+    product::{Attribute, Product},
 };
 
 const PAGE_SIZE: usize = 100;
@@ -45,6 +45,15 @@ struct ApiPrices {
     currency_minor_unit: u32,
 }
 
+impl From<ApiAttribute> for Attribute {
+    fn from(a: ApiAttribute) -> Self {
+        Attribute {
+            name: decode(&a.name),
+            terms: a.terms.into_iter().map(|t| decode(&t.name)).collect(),
+        }
+    }
+}
+
 impl From<ApiProduct> for Product {
     fn from(p: ApiProduct) -> Self {
         Product {
@@ -54,30 +63,13 @@ impl From<ApiProduct> for Product {
             in_stock: p.is_in_stock,
             price: format_price(&p.prices),
             categories: p.categories.into_iter().map(|c| c.slug).collect(),
-            details: details(&p.attributes),
+            attributes: p
+                .attributes
+                .into_iter()
+                .map(Attribute::from)
+                .filter(|a| !a.terms.is_empty())
+                .collect(),
         }
-    }
-}
-
-/// The terms of one attribute, such as `Tasting notes`, decoded. Empty when the shop has none.
-fn terms(attributes: &[ApiAttribute], name: &str) -> Vec<String> {
-    attributes
-        .iter()
-        .filter(|a| a.name == name)
-        .flat_map(|a| a.terms.iter().map(|t| decode(&t.name)))
-        .collect()
-}
-
-fn details(attributes: &[ApiAttribute]) -> Details {
-    let first = |name: &str| terms(attributes, name).into_iter().next();
-    Details {
-        origin: first("Origin"),
-        region: first("Region"),
-        varietal: first("Varietal"),
-        process: first("Process"),
-        tasting_notes: terms(attributes, "Tasting notes"),
-        flavours: terms(attributes, "Flavor Profile"),
-        sizes: terms(attributes, "Weight"),
     }
 }
 
@@ -160,18 +152,24 @@ mod tests {
         assert!(!lady.in_stock);
         assert_eq!(lady.price.as_deref(), Some("44.90 EUR"));
         assert_eq!(lady.categories, ["filter"]);
-        let d = &lady.details;
-        assert_eq!(d.origin.as_deref(), Some("Colombia"));
-        assert_eq!(d.region.as_deref(), Some("Bruselas"));
-        assert_eq!(d.process.as_deref(), Some("Advanced Anaerobic Natural"));
+        let attribute = |name: &str| {
+            lady.attributes
+                .iter()
+                .find(|a| a.name == name)
+                .map(|a| a.terms.clone())
+        };
+        assert_eq!(attribute("Origin"), Some(vec!["Colombia".to_owned()]));
         assert_eq!(
-            d.tasting_notes,
-            ["Black Cherry", "Citrus", "Strawberry Candy"]
+            attribute("Tasting notes"),
+            Some(vec![
+                "Black Cherry".into(),
+                "Citrus".into(),
+                "Strawberry Candy".into()
+            ])
         );
-        assert_eq!(d.flavours, ["Funky", "Unusual"]);
-        assert_eq!(d.sizes, ["125g"]);
-        // A product without attributes still parses, with no details.
-        assert_eq!(products[2].details, Details::default());
+        assert_eq!(lady.attributes.len(), 7);
+        // A product without attributes still parses.
+        assert!(products[2].attributes.is_empty());
     }
 
     #[test]

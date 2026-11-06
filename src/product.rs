@@ -13,28 +13,40 @@ pub struct Product {
     pub price: Option<String>,
     /// Category slugs, such as `filter` or `espresso`.
     pub categories: Vec<String>,
-    /// What the shop says about the coffee. All optional: older state files and non-coffee
-    /// products lack them.
+    /// What the shop says about the product (origin, size, ...), in the shop's order. A state
+    /// file from before this was stored has none until the next poll.
     #[serde(default)]
-    pub details: Details,
+    pub attributes: Vec<Attribute>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Details {
-    pub origin: Option<String>,
-    pub region: Option<String>,
-    pub varietal: Option<String>,
-    pub process: Option<String>,
-    pub tasting_notes: Vec<String>,
-    /// The shop's own flavour tags, such as `Funky` or `Bright`.
-    pub flavours: Vec<String>,
-    /// Bag sizes, such as `250g`.
-    pub sizes: Vec<String>,
+/// A WooCommerce product attribute: a name and the terms it has, such as `Origin: Colombia`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attribute {
+    pub name: String,
+    pub terms: Vec<String>,
 }
 
 impl Product {
     /// True when no categories are wanted, or the product is in one of them.
     pub fn in_any_category(&self, wanted: &[String]) -> bool {
         wanted.is_empty() || self.categories.iter().any(|c| wanted.contains(c))
+    }
+
+    /// The attributes to show: all of them when none are named, otherwise the named ones in the
+    /// order given (names match regardless of case), skipping what the product lacks.
+    pub fn shown_attributes(&self, wanted: &[String]) -> Vec<&Attribute> {
+        let has_terms = |a: &&Attribute| !a.terms.is_empty();
+        if wanted.is_empty() {
+            return self.attributes.iter().filter(has_terms).collect();
+        }
+        wanted
+            .iter()
+            .filter_map(|name| {
+                self.attributes
+                    .iter()
+                    .find(|a| a.name.eq_ignore_ascii_case(name))
+            })
+            .filter(has_terms)
+            .collect()
     }
 }
